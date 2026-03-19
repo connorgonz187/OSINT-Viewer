@@ -49,7 +49,7 @@ export default function FilterPanel({ filters, onChange }: Props) {
       const data: AiResult = await resp.json();
       setAiResult(data);
     } catch (e) {
-      setAiResult({ status: "error" });
+      setAiResult({ status: "error", error_msg: e instanceof Error ? e.message : "Unknown error" } as any);
     } finally {
       setAiLoading(false);
     }
@@ -97,7 +97,7 @@ export default function FilterPanel({ filters, onChange }: Props) {
           {aiLoading ? "Classifying..." : "Reclassify with AI"}
         </button>
         <p className="ai-hint">
-          Uses Claude AI to accurately classify and geolocate events
+          Uses Groq AI to accurately classify and geolocate events
         </p>
         {aiResult && (
           <div className={`ai-result ${aiResult.status === "error" ? "error" : ""}`}>
@@ -110,7 +110,7 @@ export default function FilterPanel({ filters, onChange }: Props) {
             ) : aiResult.status === "ai_unavailable" ? (
               <span>No API key configured</span>
             ) : (
-              <span>Classification failed</span>
+              <span>Classification failed{(aiResult as any).error_msg ? `: ${(aiResult as any).error_msg}` : ""}</span>
             )}
           </div>
         )}

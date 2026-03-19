@@ -7,13 +7,13 @@ import { EVENT_LABELS, EVENT_COLORS } from "./types";
 
 const ALL_EVENT_TYPES = new Set(Object.keys(EVENT_LABELS));
 
-interface GlobePoint {
+interface GlobeMarker {
   lat: number;
   lng: number;
-  color: string;
-  size: number;
-  label: string;
   type: "flight" | "event";
+  color: string;
+  heading?: number;
+  label: string;
   data: MilitaryFlight | ConflictEvent;
 }
 
@@ -66,6 +66,22 @@ function eventTooltip(e: ConflictEvent): string {
   `;
 }
 
+// Create airplane SVG for flights
+function createPlaneIcon(heading: number, color: string): string {
+  const rotation = heading || 0;
+  return `<svg width="20" height="20" viewBox="0 0 24 24" style="transform:rotate(${rotation}deg);filter:drop-shadow(0 0 3px ${color});" xmlns="http://www.w3.org/2000/svg">
+    <path d="M12 2L8 10H3L5 12L3 14H8L12 22L16 14H21L19 12L21 10H16L12 2Z" fill="${color}" stroke="rgba(0,0,0,0.5)" stroke-width="0.5"/>
+  </svg>`;
+}
+
+// Create map pin SVG for events
+function createPinIcon(color: string): string {
+  return `<svg width="18" height="26" viewBox="0 0 18 26" style="filter:drop-shadow(0 2px 4px rgba(0,0,0,0.6));transform:translate(-9px,-26px);" xmlns="http://www.w3.org/2000/svg">
+    <path d="M9 0C4.03 0 0 4.03 0 9C0 15.75 9 26 9 26S18 15.75 18 9C18 4.03 13.97 0 9 0Z" fill="${color}"/>
+    <circle cx="9" cy="9" r="4" fill="white" opacity="0.9"/>
+  </svg>`;
+}
+
 export default function App() {
   const globeRef = useRef<any>(null);
   const [filters, setFilters] = useState<Filters>({
@@ -92,19 +108,19 @@ export default function App() {
 
   const loading = flightsLoading || eventsLoading;
 
-  // Build globe points
-  const points: GlobePoint[] = useMemo(() => {
-    const pts: GlobePoint[] = [];
+  // Build globe markers
+  const markers: GlobeMarker[] = useMemo(() => {
+    const items: GlobeMarker[] = [];
 
     if (filters.showFlights) {
       for (const f of flights) {
-        pts.push({
+        items.push({
           lat: f.latitude,
           lng: f.longitude,
-          color: f.on_ground ? "#888888" : "#00ff88",
-          size: 0.3,
-          label: flightTooltip(f),
           type: "flight",
+          color: f.on_ground ? "#888888" : "#00ff88",
+          heading: f.heading ?? 0,
+          label: flightTooltip(f),
           data: f,
         });
       }
@@ -112,20 +128,42 @@ export default function App() {
 
     if (filters.showEvents) {
       for (const e of filteredEvents) {
-        pts.push({
+        items.push({
           lat: e.latitude,
           lng: e.longitude,
-          color: EVENT_COLORS[e.event_type] || "#ff6600",
-          size: 0.5,
-          label: eventTooltip(e),
           type: "event",
+          color: EVENT_COLORS[e.event_type] || "#ff6600",
+          label: eventTooltip(e),
           data: e,
         });
       }
     }
 
-    return pts;
+    return items;
   }, [flights, filteredEvents, filters.showFlights, filters.showEvents]);
+
+  // Create HTML element for each marker
+  const createMarkerElement = useCallback((d: any) => {
+    const marker = d as GlobeMarker;
+    const el = document.createElement("div");
+    el.style.cursor = "pointer";
+    el.style.pointerEvents = "auto";
+
+    if (marker.type === "flight") {
+      el.innerHTML = createPlaneIcon(marker.heading || 0, marker.color);
+    } else {
+      el.innerHTML = createPinIcon(marker.color);
+    }
+
+    el.addEventListener("click", () => {
+      if (marker.type === "event") {
+        const e = marker.data as ConflictEvent;
+        if (e.source_url) window.open(e.source_url, "_blank");
+      }
+    });
+
+    return el;
+  }, []);
 
   // Set initial globe position and controls
   useEffect(() => {
@@ -136,17 +174,7 @@ export default function App() {
         controls.enableDamping = true;
         controls.dampingFactor = 0.1;
       }
-      // Start looking at Middle East / conflict area
       globeRef.current.pointOfView({ lat: 30, lng: 35, altitude: 2.5 }, 1000);
-    }
-  }, []);
-
-  const handlePointClick = useCallback((point: any) => {
-    if (point.type === "event") {
-      const e = point.data as ConflictEvent;
-      if (e.source_url) {
-        window.open(e.source_url, "_blank");
-      }
     }
   }, []);
 
@@ -174,15 +202,12 @@ export default function App() {
             globeImageUrl="//unpkg.com/three-globe/example/img/earth-blue-marble.jpg"
             bumpImageUrl="//unpkg.com/three-globe/example/img/earth-topology.png"
             backgroundImageUrl="//unpkg.com/three-globe/example/img/night-sky.png"
-            pointsData={points}
-            pointLat="lat"
-            pointLng="lng"
-            pointColor="color"
-            pointRadius="size"
-            pointAltitude={0.01}
-            pointLabel="label"
-            onPointClick={handlePointClick}
-            pointsMerge={false}
+            htmlElementsData={markers}
+            htmlLat="lat"
+            htmlLng="lng"
+            htmlElement={createMarkerElement}
+            htmlAltitude={0.01}
+            htmlTransitionDuration={0}
             atmosphereColor="#3a86ff"
             atmosphereAltitude={0.2}
             animateIn={true}
