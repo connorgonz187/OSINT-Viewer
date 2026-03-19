@@ -6,23 +6,23 @@ Web-based intelligence dashboard that visualizes global open-source intelligence
 
 ```
 ┌─────────────┐     ┌──────────────────────────────────────┐
-│   Frontend   │────▶│          FastAPI Backend              │
-│  React/TS    │     │                                      │
-│  Leaflet Map │     │  ┌──────────┐  ┌─────────────────┐  │
-└─────────────┘     │  │ Flight   │  │ Scraping        │  │
-                    │  │ Service  │  │ Service + NLP   │  │
-                    │  └──────────┘  └─────────────────┘  │
-                    │  ┌──────────┐  ┌─────────────────┐  │
-                    │  │ Geo      │  │ Code Review     │  │
-                    │  │ Service  │  │ Agent           │  │
-                    │  └──────────┘  └─────────────────┘  │
+│   Frontend  │────>│          FastAPI Backend             │
+│  React/TS   │     │                                      │
+│  Leaflet Map│     │  ┌──────────┐  ┌─────────────────┐   │
+└─────────────┘     │  │ Flight   │  │ Scraping        │   │
+                    │  │ Service  │  │ Service + NLP   │   │
+                    │  └──────────┘  └─────────────────┘   │
+                    │  ┌──────────┐  ┌─────────────────┐   │
+                    │  │ Geo      │  │ Code Review     │   │
+                    │  │ Service  │  │ Agent           │   │
+                    │  └──────────┘  └─────────────────┘   │
                     │  ┌──────────────────────────────┐    │
                     │  │ APScheduler (periodic jobs)  │    │
                     │  └──────────────────────────────┘    │
                     └────────────────┬─────────────────────┘
                                      │
                     ┌────────────────▼─────────────────────┐
-                    │   PostgreSQL + PostGIS                │
+                    │   PostgreSQL + PostGIS               │
                     └──────────────────────────────────────┘
 ```
 
