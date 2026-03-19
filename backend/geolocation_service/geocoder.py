@@ -4,8 +4,9 @@ Converts place names to lat/lon coordinates.
 Biased toward international conflict regions to avoid US small-town false matches.
 """
 
+import asyncio
 import logging
-import time
+from collections import OrderedDict
 
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
@@ -16,8 +17,17 @@ logger = logging.getLogger(__name__)
 
 _geocoder = Nominatim(user_agent=settings.NOMINATIM_USER_AGENT, timeout=10)
 
-# Cache to avoid repeated lookups for same location
-_cache: dict[str, tuple[float, float] | None] = {}
+# LRU-style cache with max size to prevent unbounded memory growth
+_MAX_CACHE_SIZE = 5000
+_cache: OrderedDict[str, tuple[float, float] | None] = OrderedDict()
+
+
+def _cache_put(key: str, value: tuple[float, float] | None):
+    """Add to cache with size eviction."""
+    _cache[key] = value
+    if len(_cache) > _MAX_CACHE_SIZE:
+        _cache.popitem(last=False)
+
 
 # Known locations that Nominatim gets wrong (US small towns vs actual countries/regions)
 _KNOWN_OVERRIDES: dict[str, tuple[float, float]] = {
@@ -84,9 +94,19 @@ _KNOWN_OVERRIDES: dict[str, tuple[float, float]] = {
 # Reject results that land in the US for ambiguous geopolitical terms
 _CONFLICT_TERMS = {
     "palestine", "gaza", "tripoli", "lebanon", "syria", "jordan",
-    "moscow", "georgia", "cuba", "panama", "peru", "columbia",
+    "moscow", "georgia", "cuba", "panama", "peru", "colombia",
     "troy", "carthage", "alexandria", "memphis", "cairo",
 }
+
+
+def _sync_geocode(place_name: str) -> tuple:
+    """Synchronous geocode call (runs in thread executor)."""
+    return _geocoder.geocode(
+        place_name,
+        language="en",
+        exactly_one=True,
+        addressdetails=True,
+    )
 
 
 async def geocode_location(place_name: str) -> tuple[float, float] | None:
@@ -105,21 +125,18 @@ async def geocode_location(place_name: str) -> tuple[float, float] | None:
     # Check known overrides first
     if normalized in _KNOWN_OVERRIDES:
         coords = _KNOWN_OVERRIDES[normalized]
-        _cache[normalized] = coords
+        _cache_put(normalized, coords)
         logger.debug("Override geocoded '%s' -> %s", place_name, coords)
         return coords
 
     try:
         # Rate limit: Nominatim requires max 1 request per second
-        time.sleep(1.1)
+        # Use asyncio.sleep so we don't block the event loop
+        await asyncio.sleep(1.1)
 
-        # Use viewbox biased toward Eastern Hemisphere conflict zones
-        # and set exactly_one=True for best match
-        location = _geocoder.geocode(
-            place_name,
-            language="en",
-            exactly_one=True,
-            addressdetails=True,
+        # Run synchronous geopy call in thread executor
+        location = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _sync_geocode(place_name)
         )
         if location:
             coords = (location.latitude, location.longitude)
@@ -134,14 +151,14 @@ async def geocode_location(place_name: str) -> tuple[float, float] | None:
                         "Rejected US geocode for conflict term '%s' (%s)",
                         place_name, coords
                     )
-                    _cache[normalized] = None
+                    _cache_put(normalized, None)
                     return None
 
-            _cache[normalized] = coords
+            _cache_put(normalized, coords)
             logger.debug("Geocoded '%s' -> %s", place_name, coords)
             return coords
         else:
-            _cache[normalized] = None
+            _cache_put(normalized, None)
             logger.debug("Could not geocode '%s'", place_name)
             return None
     except (GeocoderTimedOut, GeocoderServiceError) as e:

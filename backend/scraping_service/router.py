@@ -1,5 +1,6 @@
 """Scraping/events service API routes."""
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -28,21 +29,42 @@ async def run_scraping_pipeline(db: AsyncSession):
     articles = await fetch_all_feeds()
     new_events = 0
 
+    # Phase 1: Extract events from articles (CPU-bound, run in thread)
+    extracted_articles = []
     for article in articles:
-        # Use title + summary for classification
-        text_content = f"{article.summary}"
-        if not text_content.strip():
+        text_content = article.summary
+        if not text_content or not text_content.strip():
             continue
 
-        extracted = extract_event(article.title, text_content)
+        # Run spaCy NLP in thread to avoid blocking event loop
+        extracted = await asyncio.to_thread(extract_event, article.title, text_content)
         if not extracted:
             continue
+        extracted_articles.append((article, extracted))
 
-        # Geocode first found location
+    logger.info("Extracted %d conflict events from %d articles", len(extracted_articles), len(articles))
+
+    # Phase 2: Collect unique locations and batch geocode
+    unique_locations: dict[str, tuple[float, float] | None] = {}
+    for _, extracted in extracted_articles:
+        for loc in extracted.locations:
+            if loc not in unique_locations:
+                unique_locations[loc] = None  # placeholder
+
+    # Geocode all unique locations
+    for loc in unique_locations:
+        coords = await geocode_location(loc)
+        unique_locations[loc] = coords
+
+    logger.info("Geocoded %d unique locations", len(unique_locations))
+
+    # Phase 3: Store events with geocoded locations
+    for article, extracted in extracted_articles:
+        # Find first geocoded location
         lat, lon = None, None
         location_name = None
         for loc in extracted.locations:
-            coords = await geocode_location(loc)
+            coords = unique_locations.get(loc)
             if coords:
                 lat, lon = coords
                 location_name = loc
@@ -63,8 +85,8 @@ async def run_scraping_pipeline(db: AsyncSession):
 
         event = Event(
             event_type=extracted.event_type,
-            title=article.title,
-            summary=extracted.summary,
+            title=article.title[:500],
+            summary=extracted.summary[:2000],
             location_name=location_name,
             latitude=lat,
             longitude=lon,
@@ -72,10 +94,19 @@ async def run_scraping_pipeline(db: AsyncSession):
             event_time=article.published or datetime.now(timezone.utc),
             source_url=article.url,
             source_name=article.source,
-            raw_text=text_content[:2000],
+            raw_text=(article.summary or "")[:2000],
         )
         db.add(event)
         new_events += 1
+
+        # Flush periodically so one bad event doesn't kill the whole batch
+        if new_events % 10 == 0:
+            try:
+                await db.flush()
+            except Exception:
+                await db.rollback()
+                logger.exception("Failed to flush batch at %d events", new_events)
+                return new_events
 
     try:
         await db.commit()
