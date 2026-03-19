@@ -1,9 +1,19 @@
+import { useState } from "react";
 import type { Filters } from "../types";
 import { EVENT_LABELS, EVENT_COLORS } from "../types";
 
 interface Props {
   filters: Filters;
   onChange: (f: Filters) => void;
+}
+
+interface AiResult {
+  status: string;
+  new_events?: number;
+  reclassified?: number;
+  total_articles?: number;
+  ai_classified?: number;
+  ai_skipped?: number;
 }
 
 const TIME_OPTIONS = [
@@ -13,6 +23,9 @@ const TIME_OPTIONS = [
 ];
 
 export default function FilterPanel({ filters, onChange }: Props) {
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResult, setAiResult] = useState<AiResult | null>(null);
+
   const toggleEventType = (type: string) => {
     const next = new Set(filters.eventTypes);
     if (next.has(type)) next.delete(type);
@@ -26,6 +39,21 @@ export default function FilterPanel({ filters, onChange }: Props) {
       : filters.timeRangeHours <= 168
         ? "7 days"
         : "30 days";
+
+  const runAiClassification = async () => {
+    setAiLoading(true);
+    setAiResult(null);
+    try {
+      const resp = await fetch("/api/events/ai-classify", { method: "POST" });
+      if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+      const data: AiResult = await resp.json();
+      setAiResult(data);
+    } catch (e) {
+      setAiResult({ status: "error" });
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   return (
     <aside className="sidebar">
@@ -56,6 +84,36 @@ export default function FilterPanel({ filters, onChange }: Props) {
             Conflict Events
           </label>
         </div>
+      </section>
+
+      {/* AI Classification */}
+      <section>
+        <h3>AI Classification</h3>
+        <button
+          className="ai-button"
+          onClick={runAiClassification}
+          disabled={aiLoading}
+        >
+          {aiLoading ? "Classifying..." : "Reclassify with AI"}
+        </button>
+        <p className="ai-hint">
+          Uses Claude AI to accurately classify and geolocate events
+        </p>
+        {aiResult && (
+          <div className={`ai-result ${aiResult.status === "error" ? "error" : ""}`}>
+            {aiResult.status === "ok" ? (
+              <>
+                <span>{aiResult.new_events} new</span>
+                <span>{aiResult.reclassified} reclassified</span>
+                <span>{aiResult.ai_classified} classified / {aiResult.ai_skipped} skipped</span>
+              </>
+            ) : aiResult.status === "ai_unavailable" ? (
+              <span>No API key configured</span>
+            ) : (
+              <span>Classification failed</span>
+            )}
+          </div>
+        )}
       </section>
 
       {/* Time range */}

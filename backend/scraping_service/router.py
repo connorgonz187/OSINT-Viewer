@@ -6,12 +6,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db, Event
 from .rss_scraper import fetch_all_feeds, fetch_article_text
 from .nlp_extractor import extract_event
+from .ai_classifier import classify_with_ai
 from geolocation_service import geocode_location
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ router = APIRouter(prefix="/api/events", tags=["events"])
 
 async def run_scraping_pipeline(db: AsyncSession):
     """
-    Full scraping pipeline:
+    Full scraping pipeline (regex-based, runs automatically):
     1. Fetch RSS articles
     2. Run NLP extraction
     3. Geocode locations
@@ -116,6 +117,146 @@ async def run_scraping_pipeline(db: AsyncSession):
 
     logger.info("Scraping pipeline complete: %d new events from %d articles", new_events, len(articles))
     return new_events
+
+
+async def run_ai_classification(db: AsyncSession) -> dict:
+    """
+    AI-powered pipeline (on-demand, triggered by user):
+    1. Fetch fresh RSS articles
+    2. Send to Claude for classification
+    3. Geocode AI-identified locations
+    4. Store/update events
+    """
+    articles = await fetch_all_feeds()
+    if not articles:
+        return {"status": "no_articles", "new_events": 0, "reclassified": 0}
+
+    # Build article dicts for AI
+    article_dicts = []
+    for a in articles:
+        if not a.summary or not a.summary.strip():
+            continue
+        article_dicts.append({
+            "title": a.title,
+            "summary": a.summary,
+        })
+
+    # Batch into chunks of 30 for API calls
+    BATCH_SIZE = 30
+    all_classifications = []
+
+    for i in range(0, len(article_dicts), BATCH_SIZE):
+        batch = article_dicts[i:i + BATCH_SIZE]
+        results = await classify_with_ai(batch)
+        if results:
+            # Map back to original article indices
+            for r in results:
+                original_idx = i + r.get("index", 0)
+                r["_original_idx"] = original_idx
+            all_classifications.extend(results)
+
+    if not all_classifications:
+        return {"status": "ai_unavailable", "new_events": 0, "reclassified": 0}
+
+    # Geocode unique AI-identified locations
+    ai_locations: dict[str, tuple[float, float] | None] = {}
+    for c in all_classifications:
+        loc = c.get("location")
+        if loc and not c.get("skip") and loc not in ai_locations:
+            ai_locations[loc] = None
+
+    for loc in ai_locations:
+        coords = await geocode_location(loc)
+        ai_locations[loc] = coords
+
+    # Store new events and reclassify existing ones
+    new_events = 0
+    reclassified = 0
+
+    for c in all_classifications:
+        if c.get("skip"):
+            continue
+
+        idx = c.get("_original_idx", -1)
+        if idx < 0 or idx >= len(articles):
+            continue
+
+        article = articles[idx]
+        event_type = c.get("event_type", "conflict")
+        location_name = c.get("location")
+
+        # Get coordinates
+        lat, lon = None, None
+        if location_name and location_name in ai_locations:
+            coords = ai_locations[location_name]
+            if coords:
+                lat, lon = coords
+
+        if lat is None or lon is None:
+            continue
+
+        # Check if event already exists
+        existing_result = await db.execute(
+            select(Event).where(
+                Event.title == article.title,
+                Event.source_url == article.url,
+            )
+        )
+        existing = existing_result.scalar_one_or_none()
+
+        if existing:
+            # Reclassify existing event
+            if existing.event_type != event_type or existing.location_name != location_name:
+                existing.event_type = event_type
+                existing.location_name = location_name
+                existing.latitude = lat
+                existing.longitude = lon
+                existing.coordinates = f"SRID=4326;POINT({lon} {lat})"
+                reclassified += 1
+        else:
+            # Create new event
+            event = Event(
+                event_type=event_type,
+                title=article.title[:500],
+                summary=(article.summary or "")[:2000],
+                location_name=location_name,
+                latitude=lat,
+                longitude=lon,
+                coordinates=f"SRID=4326;POINT({lon} {lat})",
+                event_time=article.published or datetime.now(timezone.utc),
+                source_url=article.url,
+                source_name=article.source,
+                raw_text=(article.summary or "")[:2000],
+            )
+            db.add(event)
+            new_events += 1
+
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("Failed to persist AI-classified events")
+        return {"status": "error", "new_events": 0, "reclassified": 0}
+
+    logger.info(
+        "AI classification complete: %d new events, %d reclassified from %d articles",
+        new_events, reclassified, len(articles)
+    )
+    return {
+        "status": "ok",
+        "new_events": new_events,
+        "reclassified": reclassified,
+        "total_articles": len(articles),
+        "ai_classified": sum(1 for c in all_classifications if not c.get("skip")),
+        "ai_skipped": sum(1 for c in all_classifications if c.get("skip")),
+    }
+
+
+@router.post("/ai-classify")
+async def trigger_ai_classification(db: AsyncSession = Depends(get_db)):
+    """On-demand AI classification of current news articles."""
+    result = await run_ai_classification(db)
+    return result
 
 
 @router.get("")
