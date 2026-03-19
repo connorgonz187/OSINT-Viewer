@@ -1,13 +1,11 @@
 """
-AI-powered event classification using Claude API.
-Batches articles into a single API call for cost efficiency.
-Falls back to regex if no API key is configured.
+AI-powered event classification using Groq (free) or Claude (paid) API.
+Batches articles into API calls for cost efficiency.
+Prefers Groq (free Llama 3.3 70B) over Anthropic (paid).
 """
 
 import json
 import logging
-
-import anthropic
 
 from config import settings
 
@@ -56,31 +54,37 @@ Articles:
 Respond with ONLY the JSON array, no other text."""
 
 
-async def classify_with_ai(articles: list[dict]) -> list[dict] | None:
-    """
-    Classify a batch of articles using Claude Haiku.
+async def _classify_with_groq(article_text: str) -> list[dict] | None:
+    """Classify using Groq (free tier - Llama 3.3 70B)."""
+    try:
+        from groq import AsyncGroq
 
-    Args:
-        articles: List of dicts with 'title' and 'summary' keys.
+        client = AsyncGroq(api_key=settings.GROQ_API_KEY)
 
-    Returns:
-        List of classification dicts, or None if API unavailable.
-    """
-    if not settings.ANTHROPIC_API_KEY:
-        logger.warning("No ANTHROPIC_API_KEY set, AI classification unavailable")
+        response = await client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": USER_PROMPT_TEMPLATE.format(articles=article_text)},
+            ],
+            temperature=0.1,
+            max_tokens=4096,
+            response_format={"type": "json_object"},
+        )
+
+        text = response.choices[0].message.content.strip()
+        return _parse_response(text)
+
+    except Exception as e:
+        logger.error("Groq API error: %s", e)
         return None
 
-    if not articles:
-        return []
 
-    # Format articles for the prompt
-    article_text = ""
-    for i, a in enumerate(articles):
-        title = a.get("title", "").strip()
-        summary = a.get("summary", "").strip()[:500]
-        article_text += f"\n[{i}] Title: {title}\nSummary: {summary}\n"
-
+async def _classify_with_anthropic(article_text: str) -> list[dict] | None:
+    """Classify using Claude (paid fallback)."""
     try:
+        import anthropic
+
         client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
         response = await client.messages.create(
@@ -94,53 +98,114 @@ async def classify_with_ai(articles: list[dict]) -> list[dict] | None:
         )
 
         text = response.content[0].text.strip()
+        return _parse_response(text)
 
-        # Extract JSON array from response
+    except Exception as e:
+        logger.error("Anthropic API error: %s", e)
+        return None
+
+
+def _parse_response(text: str) -> list[dict] | None:
+    """Parse JSON response from any LLM."""
+    try:
+        # Strip markdown code blocks if present
         if text.startswith("```"):
             text = text.split("\n", 1)[1]
             text = text.rsplit("```", 1)[0]
 
-        results = json.loads(text)
+        parsed = json.loads(text)
 
-        if not isinstance(results, list):
-            logger.error("AI response is not a list: %s", type(results))
+        # Handle Groq json_object mode wrapping in an object
+        if isinstance(parsed, dict):
+            # Look for an array inside the object
+            for key in ("results", "articles", "classifications", "data"):
+                if key in parsed and isinstance(parsed[key], list):
+                    parsed = parsed[key]
+                    break
+            else:
+                # If it's a single classification wrapped in an object
+                if "index" in parsed:
+                    parsed = [parsed]
+                else:
+                    logger.error("AI response is a dict with no array: %s", list(parsed.keys()))
+                    return None
+
+        if not isinstance(parsed, list):
+            logger.error("AI response is not a list: %s", type(parsed))
             return None
 
-        # Validate and clean results
-        cleaned = []
-        for r in results:
-            if not isinstance(r, dict):
-                continue
-            if r.get("skip", True):
-                cleaned.append({"index": r.get("index", -1), "skip": True})
-                continue
-
-            event_type = r.get("event_type", "")
-            if event_type not in VALID_EVENT_TYPES:
-                event_type = "conflict"  # safe fallback
-
-            cleaned.append({
-                "index": r.get("index", -1),
-                "skip": False,
-                "event_type": event_type,
-                "location": r.get("location"),
-                "confidence": min(max(float(r.get("confidence", 0.5)), 0.0), 1.0),
-            })
-
-        logger.info(
-            "AI classified %d articles: %d events, %d skipped",
-            len(articles),
-            sum(1 for c in cleaned if not c.get("skip")),
-            sum(1 for c in cleaned if c.get("skip")),
-        )
-        return cleaned
+        return parsed
 
     except json.JSONDecodeError as e:
         logger.error("Failed to parse AI response as JSON: %s", e)
         return None
-    except anthropic.APIError as e:
-        logger.error("Anthropic API error: %s", e)
+
+
+async def classify_with_ai(articles: list[dict]) -> list[dict] | None:
+    """
+    Classify a batch of articles using the best available AI provider.
+    Priority: Groq (free) > Anthropic (paid) > None.
+
+    Args:
+        articles: List of dicts with 'title' and 'summary' keys.
+
+    Returns:
+        List of classification dicts, or None if no AI available.
+    """
+    if not articles:
+        return []
+
+    # Format articles for the prompt
+    article_text = ""
+    for i, a in enumerate(articles):
+        title = a.get("title", "").strip()
+        summary = a.get("summary", "").strip()[:500]
+        article_text += f"\n[{i}] Title: {title}\nSummary: {summary}\n"
+
+    # Try Groq first (free), then Anthropic (paid)
+    raw_results = None
+    provider = None
+
+    if settings.GROQ_API_KEY:
+        logger.info("Using Groq (free) for AI classification")
+        raw_results = await _classify_with_groq(article_text)
+        provider = "groq"
+
+    if raw_results is None and settings.ANTHROPIC_API_KEY:
+        logger.info("Using Anthropic (paid) for AI classification")
+        raw_results = await _classify_with_anthropic(article_text)
+        provider = "anthropic"
+
+    if raw_results is None:
+        logger.warning("No AI provider available for classification")
         return None
-    except Exception as e:
-        logger.exception("Unexpected error in AI classification: %s", e)
-        return None
+
+    # Validate and clean results
+    cleaned = []
+    for r in raw_results:
+        if not isinstance(r, dict):
+            continue
+        if r.get("skip", True):
+            cleaned.append({"index": r.get("index", -1), "skip": True})
+            continue
+
+        event_type = r.get("event_type", "")
+        if event_type not in VALID_EVENT_TYPES:
+            event_type = "conflict"  # safe fallback
+
+        cleaned.append({
+            "index": r.get("index", -1),
+            "skip": False,
+            "event_type": event_type,
+            "location": r.get("location"),
+            "confidence": min(max(float(r.get("confidence", 0.5)), 0.0), 1.0),
+        })
+
+    logger.info(
+        "AI classified %d articles via %s: %d events, %d skipped",
+        len(articles),
+        provider,
+        sum(1 for c in cleaned if not c.get("skip")),
+        sum(1 for c in cleaned if c.get("skip")),
+    )
+    return cleaned
