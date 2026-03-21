@@ -158,9 +158,12 @@ async def run_ai_classification(db: AsyncSession) -> dict:
     # Batch into chunks of 10 for API calls (smaller batches avoid Groq 504 timeouts)
     BATCH_SIZE = 10
     all_classifications = []
+    total_batches = 0
+    failed_batches = 0
 
     for i in range(0, len(article_dicts), BATCH_SIZE):
         batch = article_dicts[i:i + BATCH_SIZE]
+        total_batches += 1
         results = await classify_with_ai(batch)
         if results:
             # Map batch-relative index back to original articles list
@@ -171,9 +174,19 @@ async def run_ai_classification(db: AsyncSession) -> dict:
                 else:
                     r["_original_idx"] = -1
             all_classifications.extend(results)
+        else:
+            failed_batches += 1
+            logger.warning("Batch %d/%d failed", total_batches, (len(article_dicts) + BATCH_SIZE - 1) // BATCH_SIZE)
 
     if not all_classifications:
-        return {"status": "ai_unavailable", "new_events": 0, "reclassified": 0}
+        has_key = bool(settings.GROQ_API_KEY or settings.ANTHROPIC_API_KEY)
+        return {
+            "status": "no_api_key" if not has_key else "all_batches_failed",
+            "new_events": 0,
+            "reclassified": 0,
+            "failed_batches": failed_batches,
+            "total_batches": total_batches,
+        }
 
     # Geocode unique AI-identified locations
     ai_locations: dict[str, tuple[float, float] | None] = {}
@@ -274,13 +287,16 @@ async def run_ai_classification(db: AsyncSession) -> dict:
         "AI classification complete: %d new events, %d reclassified from %d articles",
         new_events, reclassified, len(articles)
     )
+    status = "ok" if failed_batches == 0 else "partial"
     return {
-        "status": "ok",
+        "status": status,
         "new_events": new_events,
         "reclassified": reclassified,
         "total_articles": len(articles),
         "ai_classified": sum(1 for c in all_classifications if not c.get("skip")),
         "ai_skipped": sum(1 for c in all_classifications if c.get("skip")),
+        "failed_batches": failed_batches,
+        "total_batches": total_batches,
     }
 
 

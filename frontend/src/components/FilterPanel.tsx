@@ -101,14 +101,23 @@ export default function FilterPanel({ filters, onChange }: Props) {
         </p>
         {aiResult && (
           <div className={`ai-result ${aiResult.status === "error" ? "error" : ""}`}>
-            {aiResult.status === "ok" ? (
+            {(aiResult.status === "ok" || aiResult.status === "partial") ? (
               <>
                 <span>{aiResult.new_events} new</span>
                 <span>{aiResult.reclassified} reclassified</span>
                 <span>{aiResult.ai_classified} classified / {aiResult.ai_skipped} skipped</span>
+                {aiResult.status === "partial" && (
+                  <span style={{ color: "var(--warning)" }}>
+                    {(aiResult as any).failed_batches}/{(aiResult as any).total_batches} batches failed
+                  </span>
+                )}
               </>
-            ) : aiResult.status === "ai_unavailable" ? (
+            ) : aiResult.status === "no_api_key" ? (
               <span>No API key configured</span>
+            ) : aiResult.status === "all_batches_failed" ? (
+              <span>All AI batches failed — check API key/quota</span>
+            ) : aiResult.status === "ai_unavailable" ? (
+              <span>AI service unavailable</span>
             ) : (
               <span>Classification failed{(aiResult as any).error_msg ? `: ${(aiResult as any).error_msg}` : ""}</span>
             )}
