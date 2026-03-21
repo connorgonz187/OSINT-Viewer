@@ -35,12 +35,25 @@ function formatTime(iso: string): string {
   }
 }
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function safeUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function flightTooltip(f: MilitaryFlight): string {
   return `
     <div style="background:#1a2332;color:#e2e8f0;padding:10px 14px;border-radius:8px;font-size:13px;min-width:180px;border:1px solid #2a3a4e;">
-      <div style="font-weight:700;font-size:14px;margin-bottom:6px;color:#00ff88;">${f.callsign || f.icao24}</div>
-      <div style="display:flex;justify-content:space-between;padding:2px 0;"><span style="color:#94a3b8;">ICAO:</span><span>${f.icao24}</span></div>
-      <div style="display:flex;justify-content:space-between;padding:2px 0;"><span style="color:#94a3b8;">Country:</span><span>${f.origin_country}</span></div>
+      <div style="font-weight:700;font-size:14px;margin-bottom:6px;color:#00ff88;">${escapeHtml(f.callsign || f.icao24)}</div>
+      <div style="display:flex;justify-content:space-between;padding:2px 0;"><span style="color:#94a3b8;">ICAO:</span><span>${escapeHtml(f.icao24)}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:2px 0;"><span style="color:#94a3b8;">Country:</span><span>${escapeHtml(f.origin_country)}</span></div>
       <div style="display:flex;justify-content:space-between;padding:2px 0;"><span style="color:#94a3b8;">Altitude:</span><span>${formatAlt(f.altitude)}</span></div>
       <div style="display:flex;justify-content:space-between;padding:2px 0;"><span style="color:#94a3b8;">Speed:</span><span>${formatSpeed(f.velocity)}</span></div>
       <div style="display:flex;justify-content:space-between;padding:2px 0;"><span style="color:#94a3b8;">Heading:</span><span>${f.heading != null ? Math.round(f.heading) + "°" : "N/A"}</span></div>
@@ -52,16 +65,17 @@ function flightTooltip(f: MilitaryFlight): string {
 function eventTooltip(e: ConflictEvent): string {
   const color = EVENT_COLORS[e.event_type] || "#ff6600";
   const label = EVENT_LABELS[e.event_type] || e.event_type;
-  const summary = e.summary ? e.summary.substring(0, 200) + (e.summary.length > 200 ? "..." : "") : "";
+  const summary = e.summary ? escapeHtml(e.summary.substring(0, 200) + (e.summary.length > 200 ? "..." : "")) : "";
+  const href = e.source_url ? safeUrl(e.source_url) : null;
   return `
     <div style="background:#1a2332;color:#e2e8f0;padding:10px 14px;border-radius:8px;font-size:13px;max-width:320px;border:1px solid #2a3a4e;">
-      <span style="background:${color};color:white;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600;">${label}</span>
-      <div style="font-weight:700;font-size:14px;margin:6px 0 4px;">${e.title}</div>
+      <span style="background:${color};color:white;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600;">${escapeHtml(label)}</span>
+      <div style="font-weight:700;font-size:14px;margin:6px 0 4px;">${escapeHtml(e.title)}</div>
       ${summary ? `<div style="color:#94a3b8;line-height:1.4;margin-bottom:4px;">${summary}</div>` : ""}
-      <div style="color:#94a3b8;padding:2px 0;">Location: ${e.location_name || "Unknown"}</div>
+      <div style="color:#94a3b8;padding:2px 0;">Location: ${escapeHtml(e.location_name || "Unknown")}</div>
       <div style="color:#94a3b8;padding:2px 0;">Time: ${formatTime(e.event_time)}</div>
-      <div style="color:#94a3b8;padding:2px 0;">Source: ${e.source_name}</div>
-      ${e.source_url ? `<a href="${e.source_url}" target="_blank" rel="noopener noreferrer" style="color:#3b82f6;font-size:12px;">View Source Article</a>` : ""}
+      <div style="color:#94a3b8;padding:2px 0;">Source: ${escapeHtml(e.source_name)}</div>
+      ${href ? `<a href="${href}" target="_blank" rel="noopener noreferrer" style="color:#3b82f6;font-size:12px;">View Source Article</a>` : ""}
     </div>
   `;
 }
@@ -158,7 +172,8 @@ export default function App() {
     el.addEventListener("click", () => {
       if (marker.type === "event") {
         const e = marker.data as ConflictEvent;
-        if (e.source_url) window.open(e.source_url, "_blank");
+        const href = e.source_url ? safeUrl(e.source_url) : null;
+        if (href) window.open(href, "_blank");
       }
     });
 

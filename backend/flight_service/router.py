@@ -1,5 +1,6 @@
 """Flight service API routes."""
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -17,6 +18,7 @@ router = APIRouter(prefix="/api/flights", tags=["flights"])
 
 # In-memory cache for live military flights (refreshed by scheduler)
 _cached_military_flights: list[dict] = []
+_refresh_lock = asyncio.Lock()
 
 
 def get_cached_flights() -> list[dict]:
@@ -25,6 +27,18 @@ def get_cached_flights() -> list[dict]:
 
 async def refresh_military_flights(db: AsyncSession):
     """Fetch live data, filter military, cache and persist."""
+    global _cached_military_flights
+
+    if _refresh_lock.locked():
+        logger.debug("Skipping refresh — already in progress")
+        return
+
+    async with _refresh_lock:
+        await _do_refresh(db)
+
+
+async def _do_refresh(db: AsyncSession):
+    """Inner refresh logic, called under lock."""
     global _cached_military_flights
 
     states = await fetch_all_states()

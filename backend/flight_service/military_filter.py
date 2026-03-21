@@ -9,7 +9,7 @@ import re
 # Source: https://www.icao.int/publications/doc8643
 MILITARY_ICAO_RANGES = [
     # US Military
-    ("ADF7C0", "AFF FFF"),  # US DoD
+    ("ADF7C0", "AFFFFF"),   # US DoD
     # UK Military
     ("43C000", "43CFFF"),
     # France Military

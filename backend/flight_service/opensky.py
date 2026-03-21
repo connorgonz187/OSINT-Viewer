@@ -56,14 +56,17 @@ async def fetch_all_states(
                 auth=auth,
             )
             resp.raise_for_status()
+            data = resp.json()
         except httpx.HTTPStatusError as e:
             logger.error("OpenSky API error: %s", e.response.status_code)
             return []
         except httpx.RequestError as e:
             logger.error("OpenSky request failed: %s", e)
             return []
+        except ValueError:
+            logger.error("OpenSky returned invalid JSON")
+            return []
 
-    data = resp.json()
     states = data.get("states") or []
 
     flights = []

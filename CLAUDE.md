@@ -52,7 +52,7 @@ docker-compose.yml          # PostgreSQL, backend, frontend services
 ```bash
 # Docker (production)
 docker compose up --build -d
-# Frontend: http://localhost:3000  Backend: http://localhost:8000
+# Frontend: http://watcher:3000  Backend: http://watcher:8000
 
 # Local dev
 cd backend && pip install -r requirements.txt && python -m spacy download en_core_web_sm && uvicorn main:app --reload
@@ -79,13 +79,22 @@ Configured via `.env` file (not committed):
 - `GROQ_API_KEY` - Groq API (optional, preferred for AI classification)
 - `FLIGHT_REFRESH_INTERVAL` - Seconds between flight updates (default 60)
 - `SCRAPING_REFRESH_INTERVAL` - Seconds between scraping runs (default 900)
+- `CORS_ORIGINS` - Comma-separated allowed origins (default: `http://localhost:3000,http://localhost:5173`)
+- `ENABLE_REVIEW` - Set to `1` to enable the `/api/review` code review endpoint (disabled by default)
 
 ## Architecture Notes
 
+- Deployed on Raspberry Pi 5 — performance and memory efficiency are priorities
 - Backend is fully async (asyncpg, httpx, APScheduler async jobs)
 - PostGIS enables spatial bounding-box queries on events and flight tracks
 - Military aircraft detection uses 3 signals: ICAO hex ranges, callsign prefixes, aircraft type codes
 - NLP pipeline: spaCy NER extracts locations -> regex classifies 7 event types -> geocoder resolves coordinates
-- AI classification is on-demand (user-triggered), not automatic
+- AI classification is on-demand (user-triggered), not automatic; rate-limited to one concurrent run
 - Geocoder has hardcoded overrides for disputed/conflict regions to avoid misresolution
+- Geocoder rate-limits Nominatim calls (1 req/s) using smart delta sleep, not unconditional delay
+- RSS feeds fetched with a shared httpx client (single connection pool, not per-feed)
+- Duplicate event detection uses batch queries instead of per-article DB lookups
+- Flight cache refresh and AI classification are guarded by asyncio.Lock to prevent concurrent runs
 - Frontend renders a 3D globe with custom airplane/pin SVG markers, color-coded by type
+- Frontend HTML tooltips escape all user-supplied content to prevent XSS
+- DB port is restricted to localhost in docker-compose (not exposed to network)

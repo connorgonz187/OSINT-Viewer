@@ -53,17 +53,23 @@ class Article:
     full_text: str | None = None
 
 
-async def fetch_rss_feed(feed_url: str) -> list[Article]:
+async def fetch_rss_feed(
+    feed_url: str, client: httpx.AsyncClient | None = None,
+) -> list[Article]:
     """Fetch and parse a single RSS feed."""
     articles = []
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(
+        _client = client or httpx.AsyncClient(timeout=20.0)
+        try:
+            resp = await _client.get(
                 feed_url,
                 follow_redirects=True,
                 headers={"User-Agent": "OSINT-Viewer/1.0 (news aggregator)"},
             )
             resp.raise_for_status()
+        finally:
+            if client is None:
+                await _client.aclose()
     except httpx.HTTPError as e:
         logger.warning("Failed to fetch RSS %s: %s", feed_url, e)
         return []
@@ -111,10 +117,11 @@ async def fetch_rss_feed(feed_url: str) -> list[Article]:
 async def fetch_all_feeds(
     feed_urls: list[str] | None = None,
 ) -> list[Article]:
-    """Fetch articles from all configured feeds concurrently."""
+    """Fetch articles from all configured feeds concurrently using a shared client."""
     urls = feed_urls or DEFAULT_FEEDS
-    tasks = [fetch_rss_feed(url) for url in urls]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        tasks = [fetch_rss_feed(url, client=client) for url in urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
     all_articles = []
     for result in results:

@@ -5,8 +5,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, text, update
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select, text, update, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db, Event
@@ -17,6 +17,9 @@ from geolocation_service import geocode_location
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/events", tags=["events"])
+
+# Lock to prevent concurrent AI classification runs (expensive on Pi)
+_ai_classify_lock = asyncio.Lock()
 
 
 async def run_scraping_pipeline(db: AsyncSession):
@@ -59,7 +62,22 @@ async def run_scraping_pipeline(db: AsyncSession):
 
     logger.info("Geocoded %d unique locations", len(unique_locations))
 
-    # Phase 3: Store events with geocoded locations
+    # Phase 3: Pre-fetch existing events to avoid N+1 duplicate checks
+    article_keys = [(a.title, a.url) for a, _ in extracted_articles]
+    existing_keys: set[tuple[str, str]] = set()
+    if article_keys:
+        # Batch query: fetch all (title, source_url) pairs that already exist
+        BATCH = 200
+        for i in range(0, len(article_keys), BATCH):
+            batch_keys = article_keys[i:i + BATCH]
+            result = await db.execute(
+                select(Event.title, Event.source_url).where(
+                    tuple_(Event.title, Event.source_url).in_(batch_keys)
+                )
+            )
+            existing_keys.update((row[0], row[1]) for row in result.all())
+
+    # Store events with geocoded locations
     for article, extracted in extracted_articles:
         # Find first geocoded location
         lat, lon = None, None
@@ -74,14 +92,8 @@ async def run_scraping_pipeline(db: AsyncSession):
         if lat is None or lon is None:
             continue  # skip events we can't place on the map
 
-        # Check for duplicate
-        existing = await db.execute(
-            select(Event).where(
-                Event.title == article.title,
-                Event.source_url == article.url,
-            )
-        )
-        if existing.scalar_one_or_none():
+        # Check for duplicate using pre-fetched set
+        if (article.title, article.url) in existing_keys:
             continue
 
         event = Event(
@@ -131,15 +143,17 @@ async def run_ai_classification(db: AsyncSession) -> dict:
     if not articles:
         return {"status": "no_articles", "new_events": 0, "reclassified": 0}
 
-    # Build article dicts for AI
+    # Build article dicts for AI, tracking original indices
     article_dicts = []
-    for a in articles:
+    dict_to_article_idx: list[int] = []
+    for idx, a in enumerate(articles):
         if not a.summary or not a.summary.strip():
             continue
         article_dicts.append({
             "title": a.title,
             "summary": a.summary,
         })
+        dict_to_article_idx.append(idx)
 
     # Batch into chunks of 30 for API calls
     BATCH_SIZE = 30
@@ -149,10 +163,13 @@ async def run_ai_classification(db: AsyncSession) -> dict:
         batch = article_dicts[i:i + BATCH_SIZE]
         results = await classify_with_ai(batch)
         if results:
-            # Map back to original article indices
+            # Map batch-relative index back to original articles list
             for r in results:
-                original_idx = i + r.get("index", 0)
-                r["_original_idx"] = original_idx
+                dict_idx = i + r.get("index", 0)
+                if 0 <= dict_idx < len(dict_to_article_idx):
+                    r["_original_idx"] = dict_to_article_idx[dict_idx]
+                else:
+                    r["_original_idx"] = -1
             all_classifications.extend(results)
 
     if not all_classifications:
@@ -168,6 +185,28 @@ async def run_ai_classification(db: AsyncSession) -> dict:
     for loc in ai_locations:
         coords = await geocode_location(loc)
         ai_locations[loc] = coords
+
+    # Pre-fetch existing events for batch duplicate check
+    classify_keys = []
+    for c in all_classifications:
+        if c.get("skip"):
+            continue
+        idx = c.get("_original_idx", -1)
+        if 0 <= idx < len(articles):
+            classify_keys.append((articles[idx].title, articles[idx].url))
+
+    existing_events: dict[tuple[str, str], Event] = {}
+    if classify_keys:
+        BATCH = 200
+        for i in range(0, len(classify_keys), BATCH):
+            batch_keys = classify_keys[i:i + BATCH]
+            result = await db.execute(
+                select(Event).where(
+                    tuple_(Event.title, Event.source_url).in_(batch_keys)
+                )
+            )
+            for e in result.scalars().all():
+                existing_events[(e.title, e.source_url)] = e
 
     # Store new events and reclassify existing ones
     new_events = 0
@@ -195,14 +234,7 @@ async def run_ai_classification(db: AsyncSession) -> dict:
         if lat is None or lon is None:
             continue
 
-        # Check if event already exists
-        existing_result = await db.execute(
-            select(Event).where(
-                Event.title == article.title,
-                Event.source_url == article.url,
-            )
-        )
-        existing = existing_result.scalar_one_or_none()
+        existing = existing_events.get((article.title, article.url))
 
         if existing:
             # Reclassify existing event
@@ -255,7 +287,10 @@ async def run_ai_classification(db: AsyncSession) -> dict:
 @router.post("/ai-classify")
 async def trigger_ai_classification(db: AsyncSession = Depends(get_db)):
     """On-demand AI classification of current news articles."""
-    result = await run_ai_classification(db)
+    if _ai_classify_lock.locked():
+        raise HTTPException(status_code=429, detail="AI classification already in progress")
+    async with _ai_classify_lock:
+        result = await run_ai_classification(db)
     return result
 
 

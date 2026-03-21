@@ -159,7 +159,7 @@ async def review_with_llm(code_summary: str) -> list[dict] | None:
     try:
         import anthropic
 
-        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
         prompt = f"""You are a senior security engineer reviewing an OSINT intelligence dashboard.
 Analyze this code summary and provide structured findings.
@@ -177,16 +177,14 @@ Respond with a JSON array of objects with keys: file, severity, category, issue,
 Severity: critical, warning, info
 Category: security, performance, scraping, quality"""
 
-        response = client.messages.create(
+        response = await client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
         )
-        # Parse response - the LLM should return JSON
         import json
 
         text = response.content[0].text
-        # Try to extract JSON from response
         if "[" in text:
             json_str = text[text.index("[") : text.rindex("]") + 1]
             return json.loads(json_str)

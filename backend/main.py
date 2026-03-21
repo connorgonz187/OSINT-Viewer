@@ -4,9 +4,10 @@ Main application entry point.
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from flight_service.router import router as flight_router
@@ -38,10 +39,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS - allow frontend
+# CORS - allow frontend origins
+_cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in _cors_origins],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -59,6 +61,8 @@ async def health():
 
 @app.get("/api/review")
 async def code_review():
-    """Run code review agent and return report."""
+    """Run code review agent and return report. Disabled unless ENABLE_REVIEW=1."""
+    if not os.getenv("ENABLE_REVIEW", ""):
+        raise HTTPException(status_code=404, detail="Not found")
     report = await run_full_review()
     return report

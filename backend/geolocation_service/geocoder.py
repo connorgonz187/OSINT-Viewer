@@ -6,6 +6,7 @@ Biased toward international conflict regions to avoid US small-town false matche
 
 import asyncio
 import logging
+import time
 from collections import OrderedDict
 
 from geopy.geocoders import Nominatim
@@ -20,6 +21,7 @@ _geocoder = Nominatim(user_agent=settings.NOMINATIM_USER_AGENT, timeout=10)
 # LRU-style cache with max size to prevent unbounded memory growth
 _MAX_CACHE_SIZE = 5000
 _cache: OrderedDict[str, tuple[float, float] | None] = OrderedDict()
+_last_request_time: float = 0.0
 
 
 def _cache_put(key: str, value: tuple[float, float] | None):
@@ -131,11 +133,15 @@ async def geocode_location(place_name: str) -> tuple[float, float] | None:
 
     try:
         # Rate limit: Nominatim requires max 1 request per second
-        # Use asyncio.sleep so we don't block the event loop
-        await asyncio.sleep(1.1)
+        # Only sleep the remaining delta since last request
+        global _last_request_time
+        elapsed = time.monotonic() - _last_request_time
+        if elapsed < 1.1:
+            await asyncio.sleep(1.1 - elapsed)
+        _last_request_time = time.monotonic()
 
         # Run synchronous geopy call in thread executor
-        location = await asyncio.get_event_loop().run_in_executor(
+        location = await asyncio.get_running_loop().run_in_executor(
             None, lambda: _sync_geocode(place_name)
         )
         if location:
