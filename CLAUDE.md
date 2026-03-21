@@ -95,6 +95,11 @@ Configured via `.env` file (not committed):
 - RSS feeds fetched with a shared httpx client (single connection pool, not per-feed)
 - Duplicate event detection uses batch queries instead of per-article DB lookups
 - Flight cache refresh and AI classification are guarded by asyncio.Lock to prevent concurrent runs
-- Frontend renders a 3D globe with custom airplane/pin SVG markers, color-coded by type
-- Frontend HTML tooltips escape all user-supplied content to prevent XSS
+- Frontend renders a 3D globe using react-globe.gl's `pointsData` layer (GPU-rendered 3D cylinders)
+- Events shown as colored 3D columns; aircraft as green dots; pulsing rings on the 25 most recent events
+- Clicking a marker opens a React detail panel (flight info or event details + source link)
+- Hover shows HTML tooltip; click navigates to detail panel instead of directly opening URLs
+- Globe renderer is sized to match container via ResizeObserver (avoids wasting GPU memory on Pi)
+- Frontend HTML tooltips escape all user-supplied content (including single quotes) to prevent XSS
+- Source URLs validated against javascript:/data: URI schemes before rendering or opening
 - DB port is restricted to localhost in docker-compose (not exposed to network)
