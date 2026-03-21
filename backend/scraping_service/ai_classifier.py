@@ -55,7 +55,9 @@ Respond with ONLY the JSON array, no other text."""
 
 
 async def _classify_with_groq(article_text: str) -> list[dict] | None:
-    """Classify using Groq (free tier - Llama 3.3 70B)."""
+    """Classify using Groq (free tier - Llama 3.3 70B) with retry on rate limit."""
+    import asyncio
+
     try:
         from groq import AsyncGroq
 
@@ -64,19 +66,28 @@ async def _classify_with_groq(article_text: str) -> list[dict] | None:
             timeout=60.0,
         )
 
-        response = await client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": USER_PROMPT_TEMPLATE.format(articles=article_text)},
-            ],
-            temperature=0.1,
-            max_tokens=2048,
-            response_format={"type": "json_object"},
-        )
-
-        text = response.choices[0].message.content.strip()
-        return _parse_response(text)
+        for attempt in range(3):
+            try:
+                response = await client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": USER_PROMPT_TEMPLATE.format(articles=article_text)},
+                    ],
+                    temperature=0.1,
+                    max_tokens=2048,
+                    response_format={"type": "json_object"},
+                )
+                text = response.choices[0].message.content.strip()
+                return _parse_response(text)
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str or "rate" in error_str.lower():
+                    wait = (attempt + 1) * 10
+                    logger.warning("Groq rate limited, retrying in %ds (attempt %d/3)", wait, attempt + 1)
+                    await asyncio.sleep(wait)
+                    continue
+                raise
 
     except Exception as e:
         logger.error("Groq API error: %s", e)

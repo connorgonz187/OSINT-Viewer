@@ -155,28 +155,37 @@ async def run_ai_classification(db: AsyncSession) -> dict:
         })
         dict_to_article_idx.append(idx)
 
-    # Batch into chunks of 10 for API calls (smaller batches avoid Groq 504 timeouts)
+    # Batch into chunks of 10, rate-limited to stay under Groq free tier limits
+    # Groq free: ~30 req/min, ~12K tokens/min
     BATCH_SIZE = 10
+    MAX_ARTICLES = 150  # cap total to keep request time reasonable
+    capped_dicts = article_dicts[:MAX_ARTICLES]
+    capped_idx_map = dict_to_article_idx[:MAX_ARTICLES]
     all_classifications = []
     total_batches = 0
     failed_batches = 0
 
-    for i in range(0, len(article_dicts), BATCH_SIZE):
-        batch = article_dicts[i:i + BATCH_SIZE]
+    for i in range(0, len(capped_dicts), BATCH_SIZE):
+        batch = capped_dicts[i:i + BATCH_SIZE]
         total_batches += 1
+
+        # Rate limit: wait between batches to avoid Groq 429s
+        if i > 0:
+            await asyncio.sleep(4)
+
         results = await classify_with_ai(batch)
         if results:
             # Map batch-relative index back to original articles list
             for r in results:
                 dict_idx = i + r.get("index", 0)
-                if 0 <= dict_idx < len(dict_to_article_idx):
-                    r["_original_idx"] = dict_to_article_idx[dict_idx]
+                if 0 <= dict_idx < len(capped_idx_map):
+                    r["_original_idx"] = capped_idx_map[dict_idx]
                 else:
                     r["_original_idx"] = -1
             all_classifications.extend(results)
         else:
             failed_batches += 1
-            logger.warning("Batch %d/%d failed", total_batches, (len(article_dicts) + BATCH_SIZE - 1) // BATCH_SIZE)
+            logger.warning("Batch %d/%d failed", total_batches, (len(capped_dicts) + BATCH_SIZE - 1) // BATCH_SIZE)
 
     if not all_classifications:
         has_key = bool(settings.GROQ_API_KEY or settings.ANTHROPIC_API_KEY)
