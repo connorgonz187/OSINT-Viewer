@@ -155,8 +155,8 @@ async def run_ai_classification(db: AsyncSession) -> dict:
         })
         dict_to_article_idx.append(idx)
 
-    # Batch into chunks of 30 for API calls
-    BATCH_SIZE = 30
+    # Batch into chunks of 10 for API calls (smaller batches avoid Groq 504 timeouts)
+    BATCH_SIZE = 10
     all_classifications = []
 
     for i in range(0, len(article_dicts), BATCH_SIZE):

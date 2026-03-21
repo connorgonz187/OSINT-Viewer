@@ -59,7 +59,10 @@ async def _classify_with_groq(article_text: str) -> list[dict] | None:
     try:
         from groq import AsyncGroq
 
-        client = AsyncGroq(api_key=settings.GROQ_API_KEY)
+        client = AsyncGroq(
+            api_key=settings.GROQ_API_KEY,
+            timeout=60.0,
+        )
 
         response = await client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -68,7 +71,7 @@ async def _classify_with_groq(article_text: str) -> list[dict] | None:
                 {"role": "user", "content": USER_PROMPT_TEMPLATE.format(articles=article_text)},
             ],
             temperature=0.1,
-            max_tokens=4096,
+            max_tokens=2048,
             response_format={"type": "json_object"},
         )
 
@@ -159,7 +162,7 @@ async def classify_with_ai(articles: list[dict]) -> list[dict] | None:
     article_text = ""
     for i, a in enumerate(articles):
         title = a.get("title", "").strip()
-        summary = a.get("summary", "").strip()[:500]
+        summary = a.get("summary", "").strip()[:300]
         article_text += f"\n[{i}] Title: {title}\nSummary: {summary}\n"
 
     # Try Groq first (free), then Anthropic (paid)
